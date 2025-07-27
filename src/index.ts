@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger as honoLogger } from "hono/logger";
+import { callCloudflareAI } from "./utils/ai-utils";
+import { CLOUDFLARE_AI_MODELS } from "./utils/ai-utils";
+import { generate, chat } from "./fetchers";
 
 // Hono app
 const app = new Hono();
@@ -26,9 +29,11 @@ app.get("/", (c) => {
   });
 });
 
-// Fetch Endpoints
+// AI Endpoints
+app.post("/ai/generate", generate);
+app.post("/ai/chat", chat);
 
-// Health Check Endpoint
+// Health Check
 app.get("/health", (c) => {
   return c.json({
     status: "healthy",

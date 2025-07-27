@@ -10,6 +10,12 @@ import {
   updateOrderStatus, 
   getUserInfo 
 } from "./commerce";
+import {
+  sendTextMessage,
+  sendInteractiveMessage,
+  webhookVerification,
+  webhookReceiver
+} from "./whatsapp";
 
 // Hono app
 const app = new Hono();
@@ -20,7 +26,7 @@ app.use(
   "*",
   cors({
     origin: "*",
-    allowMethods: ["POST", "OPTIONS", "GET"],
+    allowMethods: ["POST", "OPTIONS", "GET", "PUT"],
     allowHeaders: ["Content-Type", "Authorization"],
     maxAge: 86400,
   })
@@ -42,9 +48,15 @@ app.get("/", (c) => {
         "POST /api/orders - Get customer orders",
         "PUT /api/orders/:id/status - Update order status",
         "GET /api/user-info/:userId - Get customer info"
+      ],
+      whatsapp: [
+        "POST /api/whatsapp/send-message - Send text message",
+        "POST /api/whatsapp/send-interactive - Send interactive message",
+        "GET /webhook - Webhook verification",
+        "POST /webhook - Webhook receiver"
       ]
     },
-    authentication: "Bearer token required for commerce endpoints",
+    authentication: "Bearer token required for commerce and WhatsApp endpoints",
   });
 });
 
@@ -59,6 +71,12 @@ app.get("/api/orders/:id", getOrderById);
 app.post("/api/orders", getCustomerOrders);
 app.put("/api/orders/:id/status", updateOrderStatus);
 app.get("/api/user-info/:userId", getUserInfo);
+
+// WhatsApp Endpoints
+app.post("/api/whatsapp/send-message", sendTextMessage);
+app.post("/api/whatsapp/send-interactive", sendInteractiveMessage);
+app.get("/webhook", webhookVerification);
+app.post("/webhook", webhookReceiver);
 
 // Health Check
 app.get("/health", (c) => {

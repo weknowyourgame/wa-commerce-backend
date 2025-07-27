@@ -17,6 +17,7 @@
 	},
 	"dependencies": {
 		"@neondatabase/serverless": "^1.0.1",
+		"@prisma/client": "^5.22.0",
 		"hono": "^4.8.9"
 	}
 }

@@ -277,11 +277,11 @@ export async function getOrderById(c: Context) {
   }
 }
 
-// POST /api/orders - Get all orders of a particular customer
+// POST /api/orders - Get all orders of a particular customer from his phone number
 export async function getCustomerOrders(c: Context) {
   try {
     const body = await c.req.json();
-    const { customerId } = body;
+    const { phoneNumber } = body;
     const apiToken = c.req.header("Authorization")?.replace("Bearer ", "");
     
     if (!apiToken) {
@@ -291,10 +291,10 @@ export async function getCustomerOrders(c: Context) {
       }, 401);
     }
 
-    if (!customerId) {
+    if (!phoneNumber) {
       return c.json({ 
         success: false, 
-        error: "customerId is required" 
+        error: "phoneNumber is required" 
       }, 400);
     }
 
@@ -325,9 +325,9 @@ export async function getCustomerOrders(c: Context) {
          FROM "Order" o
          LEFT JOIN "Customer" c ON o."customerId" = c.id
          LEFT JOIN "Product" p ON o."productId" = p.id
-         WHERE o."customerId" = $1 AND o."merchantId" = $2
+         WHERE c.phone = $1 AND o."merchantId" = $2
          ORDER BY o."createdAt" DESC`,
-        [customerId, merchantId]
+        [phoneNumber, merchantId]
       );
 
       const orders = rows.map(row => ({
@@ -481,10 +481,10 @@ export async function updateOrderStatus(c: Context) {
   }
 }
 
-// GET /api/user-info/:userId - Get customer information
+// GET /api/user-info/:phoneNumber - Get customer information from his phone number
 export async function getUserInfo(c: Context) {
   try {
-    const userId = c.req.param("userId");
+    const phoneNumber = c.req.param("phoneNumber");
     const apiToken = c.req.header("Authorization")?.replace("Bearer ", "");
     
     if (!apiToken) {
@@ -515,8 +515,8 @@ export async function getUserInfo(c: Context) {
 
       // Get customer info
       const { rows: customerRows } = await client.query(
-        `SELECT id, phone, "createdAt", "updatedAt" FROM "Customer" WHERE id = $1`,
-        [userId]
+        `SELECT id, phone, "createdAt", "updatedAt" FROM "Customer" WHERE phone = $1`,
+        [phoneNumber]
       );
 
       if (customerRows.length === 0) {
@@ -534,9 +534,9 @@ export async function getUserInfo(c: Context) {
                 p.id as product_id, p.name as product_name, p.price as product_price
          FROM "Order" o
          LEFT JOIN "Product" p ON o."productId" = p.id
-         WHERE o."customerId" = $1 AND o."merchantId" = $2
+         WHERE c.phone = $1 AND o."merchantId" = $2
          ORDER BY o."createdAt" DESC`,
-        [userId, merchantId]
+        [phoneNumber, merchantId]
       );
 
       const orders = orderRows.map(row => ({

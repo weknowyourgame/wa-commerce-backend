@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger as honoLogger } from "hono/logger";
-import { generate, chat } from "./fetchers";
+import { generateEndpoint, chatEndpoint } from "./fetchers";
 import { 
   getProducts, 
   getBusinessInfo, 
@@ -16,6 +16,8 @@ import {
   webhookVerification,
   webhookReceiver
 } from "./whatsapp";
+import { processIntentMessage } from "./ai-utils";
+import { CLOUDFLARE_AI_MODELS } from "./utils/ai-utils";
 
 // Hono app
 const app = new Hono();
@@ -38,8 +40,9 @@ app.get("/", (c) => {
     version: "1.0.0",
     endpoints: {
       ai: [
-        "POST /ai/generate - Generate AI text",
-        "POST /ai/chat - Chat with AI"
+        "POST /ai/generate - Generate AI text (LLAMA_3_1_8B)",
+        "POST /ai/chat - Chat with AI (LLAMA_3_1_8B)",
+        "POST /ai/intent - Intent-based AI responses with context (LLAMA_3_1_8B)"
       ],
       commerce: [
         "GET /api/products - Get merchant products",
@@ -57,12 +60,14 @@ app.get("/", (c) => {
       ]
     },
     authentication: "Bearer token required for commerce and WhatsApp endpoints",
+      ai_model: CLOUDFLARE_AI_MODELS.LLAMA_3_1_8B,
   });
 });
 
 // AI Endpoints
-app.post("/ai/generate", generate);
-app.post("/ai/chat", chat);
+app.post("/ai/generate", generateEndpoint);
+app.post("/ai/chat", chatEndpoint);
+app.post("/ai/intent", processIntentMessage);
 
 // Commerce Endpoints
 app.get("/api/products", getProducts);
@@ -83,6 +88,7 @@ app.get("/health", (c) => {
   return c.json({
     status: "healthy",
     timestamp: new Date().toISOString(),
+    ai_model: "LLAMA_3_1_8B",
   });
 });
 

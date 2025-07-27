@@ -33,3 +33,28 @@ export interface CloudflareAIOptions {
     CONFIRM_ORDER = "CONFIRM_ORDER"
   }
 
+export interface IntentResult {
+  intent: UserIntent;
+  targetId?: string;
+}
+
+export interface MerchantContext {
+  merchant: any;
+  products: any[];
+  orders: any[];
+}
+
+export interface AIResponse {
+  success: boolean;
+  data?: {
+    response: string;
+    intent: UserIntent;
+    targetId?: string;
+    context: {
+      productsCount: number;
+      ordersCount: number;
+      businessName: string;
+    };
+  };
+  error?: string;
+}

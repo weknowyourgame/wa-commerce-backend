@@ -1,6 +1,7 @@
 import { Context } from "hono";
 import { Client } from '@neondatabase/serverless';
 import { TextMessage, InteractiveMessage } from './types/wa-types';
+import { processIntentMessage } from './ai-utils';
 
 // POST /api/whatsapp/send-message - Send text message
 export async function sendTextMessage(c: Context) {
@@ -312,7 +313,7 @@ async function processWhatsAppMessage(value: any, env: any) {
         
         // Find merchant by phone number ID
         const { rows: merchantRows } = await client.query(
-          `SELECT id FROM "Merchant" WHERE "phoneNumberId" = $1`,
+          `SELECT id, "apiToken" FROM "Merchant" WHERE "phoneNumberId" = $1`,
           [phoneNumberId]
         );
 
@@ -321,7 +322,7 @@ async function processWhatsAppMessage(value: any, env: any) {
           continue;
         }
 
-        const merchantId = merchantRows[0].id;
+        const merchant = merchantRows[0];
 
         // Store the webhook event
         await client.query(
@@ -336,16 +337,16 @@ async function processWhatsAppMessage(value: any, env: any) {
               timestamp,
               message_data: message
             }),
-            merchantId,
+            merchant.id,
             new Date()
           ]
         );
 
         // Process different message types
         if (messageType === 'text') {
-          await processTextMessage(message, merchantId, client);
+          await processTextMessage(message, merchant, client, env);
         } else if (messageType === 'interactive') {
-          await processInteractiveMessage(message, merchantId, client);
+          await processInteractiveMessage(message, merchant, client);
         }
       }
     } finally {
@@ -356,25 +357,223 @@ async function processWhatsAppMessage(value: any, env: any) {
   }
 }
 
-// Process text messages
-async function processTextMessage(message: any, merchantId: string, client: Client) {
+// Process text messages with AI intent system
+async function processTextMessage(message: any, merchant: any, client: Client, env: any) {
   const text = message.text.body;
   const from = message.from;
   
   console.log(`Processing text message from ${from}: ${text}`);
   
-  // Add your business logic here
-  // For example: auto-reply, order processing, etc.
-  
-  // Example: Auto-reply for common queries
-  if (text.toLowerCase().includes('hello') || text.toLowerCase().includes('hi')) {
-    // Send auto-reply
-    console.log('Sending auto-reply for greeting');
+  try {
+    // Use the intent-based AI system to generate response
+    const intentResponse = await processIntentMessageInternal({
+      message: text,
+      phoneNumber: from,
+      apiToken: merchant.apiToken
+    }, env);
+
+    if (intentResponse.success) {
+      // Send the AI-generated response back to the user
+      await sendWhatsAppResponse(from, intentResponse.data.response, merchant, client);
+    } else {
+      // Fallback response if AI fails
+      await sendWhatsAppResponse(from, "I'm sorry, I didn't understand that. How can I help you?", merchant, client);
+    }
+  } catch (error) {
+    console.error('Error processing intent message:', error);
+    // Send fallback response
+    await sendWhatsAppResponse(from, "I'm having trouble processing your request. Please try again.", merchant, client);
+  }
+}
+
+// Helper function to send WhatsApp response
+async function sendWhatsAppResponse(to: string, message: string, merchant: any, client: Client) {
+  try {
+    const whatsappMessage: TextMessage = {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "text",
+      text: {
+        preview_url: true,
+        body: message
+      }
+    };
+
+    const response = await fetch(
+      `https://graph.facebook.com/v21.0/${merchant.phoneNumberId}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${merchant.whatsappAccessToken}`
+        },
+        body: JSON.stringify(whatsappMessage)
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      console.error('Failed to send WhatsApp response:', result);
+      return;
+    }
+
+    // Log the response
+    await client.query(
+      `INSERT INTO "WebhookEvent" (id, payload, "merchantId", "receivedAt")
+       VALUES ($1, $2, $3, $4)`,
+      [
+        crypto.randomUUID(),
+        JSON.stringify({
+          type: 'whatsapp_ai_response_sent',
+          to,
+          message,
+          whatsapp_response: result
+        }),
+        merchant.id,
+        new Date()
+      ]
+    );
+
+    console.log(`AI response sent to ${to}: ${message}`);
+  } catch (error) {
+    console.error('Error sending WhatsApp response:', error);
+  }
+}
+
+// Internal function to process intent (without HTTP context)
+async function processIntentMessageInternal(request: any, env: any) {
+  try {
+    const { message, phoneNumber, apiToken } = request;
+    
+    if (!apiToken || !message) {
+      return { success: false, error: "Missing required fields" };
+    }
+
+    // Import the AI functions directly
+    const { generate } = await import('./fetchers');
+    const { generateIntentPrompt } = await import('./prompts/classifier');
+    const { generateProductsPrompt } = await import('./prompts/products');
+    const { generateOrdersPrompt } = await import('./prompts/orders');
+    const { generateBusinessPrompt } = await import('./prompts/business');
+    const { generatePaymentPrompt } = await import('./prompts/payment');
+    const { generateGeneralPrompt } = await import('./prompts/general');
+    const { UserIntent } = await import('./types/ai-types');
+
+    // Step 1: Classify intent
+    const intentPrompt = generateIntentPrompt(message);
+    const intentResponse = await generate({
+      prompt: intentPrompt,
+      model: "gpt-3.5-turbo",
+      max_tokens: 100
+    }, env);
+
+    if (!intentResponse.success) {
+      throw new Error("Failed to classify intent");
+    }
+
+    const intentResult = JSON.parse(intentResponse.data);
+    const intent = intentResult.intent as UserIntent;
+    const targetId = intentResult.targetId;
+
+    // Step 2: Get merchant context
+    const client = new Client(env.DATABASE_URL);
+    await client.connect();
+    
+    try {
+      const { rows: merchantRows } = await client.query(
+        `SELECT m.*, u.name as user_name, u.email as user_email
+         FROM "Merchant" m
+         LEFT JOIN "user" u ON m."userId" = u.id
+         WHERE m."apiToken" = $1`,
+        [apiToken]
+      );
+
+      if (merchantRows.length === 0) {
+        return { success: false, error: "Invalid API token" };
+      }
+
+      const merchant = merchantRows[0];
+
+      // Get products
+      const { rows: products } = await client.query(
+        `SELECT id, name, description, price, "imageUrl" FROM "Product" WHERE "merchantId" = $1`,
+        [merchant.id]
+      );
+
+      // Get orders
+      const { rows: orders } = await client.query(
+        `SELECT o.id, o.amount, o.status, o."createdAt", o.txnId,
+                p.name as product_name, p.price as product_price
+         FROM "Order" o
+         LEFT JOIN "Product" p ON o."productId" = p.id
+         WHERE o."merchantId" = $1
+         ORDER BY o."createdAt" DESC`,
+        [merchant.id]
+      );
+
+      const context = { merchant, products, orders };
+
+      // Step 3: Generate context-aware response
+      let prompt = "";
+      switch (intent) {
+        case UserIntent.VIEW_PRODUCTS:
+        case UserIntent.PRODUCT_INFO:
+        case UserIntent.ORDER_PRODUCT:
+          prompt = generateProductsPrompt(intent, message, context.products, targetId);
+          break;
+        case UserIntent.ALL_ORDERS_INFO:
+        case UserIntent.SINGLE_ORDER_INFO:
+        case UserIntent.CONFIRM_ORDER:
+          prompt = generateOrdersPrompt(intent, message, context.orders, targetId);
+          break;
+        case UserIntent.BUSINESS_INFO:
+          prompt = generateBusinessPrompt(intent, message, context.merchant);
+          break;
+        case UserIntent.PAYMENT_INFO:
+          prompt = generatePaymentPrompt(intent, message, context.merchant);
+          break;
+        case UserIntent.GENERAL_CHAT:
+        default:
+          prompt = generateGeneralPrompt(intent, message);
+          break;
+      }
+
+      const response = await generate({
+        prompt,
+        model: "gpt-4",
+        max_tokens: 500
+      }, env);
+
+      if (!response.success) {
+        return { success: false, error: "Failed to generate response" };
+      }
+
+      return {
+        success: true,
+        data: {
+          response: response.data,
+          intent,
+          targetId,
+          context: {
+            productsCount: context.products.length,
+            ordersCount: context.orders.length,
+            businessName: context.merchant.businessInfo?.name || 'Unknown'
+          }
+        }
+      };
+    } finally {
+      await client.end();
+    }
+  } catch (error: any) {
+    console.error("Intent processing error:", error);
+    return { success: false, error: error.message };
   }
 }
 
 // Process interactive messages (button clicks, list selections)
-async function processInteractiveMessage(message: any, merchantId: string, client: Client) {
+async function processInteractiveMessage(message: any, merchant: any, client: Client) {
   const interactive = message.interactive;
   const from = message.from;
   

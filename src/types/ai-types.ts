@@ -20,3 +20,16 @@ export interface CloudflareAIOptions {
       totalTokens?: number;
     };
   }
+
+  export enum UserIntent {
+    VIEW_PRODUCTS = "VIEW_PRODUCTS",
+    ORDER_PRODUCT = "ORDER_PRODUCT",
+    PRODUCT_INFO = "PRODUCT_INFO",
+    BUSINESS_INFO = "BUSINESS_INFO",
+    GENERAL_CHAT = "GENERAL_CHAT",
+    PAYMENT_INFO = "PAYMENT_INFO",
+    ALL_ORDERS_INFO = "ALL_ORDERS_INFO",
+    SINGLE_ORDER_INFO = "SINGLE_ORDER_INFO",
+    CONFIRM_ORDER = "CONFIRM_ORDER"
+  }
+

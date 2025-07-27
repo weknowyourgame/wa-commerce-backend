@@ -1,8 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger as honoLogger } from "hono/logger";
-import { callCloudflareAI } from "./utils/ai-utils";
-import { CLOUDFLARE_AI_MODELS } from "./utils/ai-utils";
 import { generate, chat } from "./fetchers";
 
 // Hono app

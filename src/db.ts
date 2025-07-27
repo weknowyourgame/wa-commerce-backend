@@ -1,8 +1,14 @@
-import { Client } from "@neondatabase/serverless";
-interface Env { DATABASE_URL: string; }
+import { Client } from '@neondatabase/serverless';
 
-export async function getDbClient(env: Env) {
-	const client = new Client(env.DATABASE_URL);
-	await client.connect();
-	return client;
+interface Env {
+  DATABASE_URL: string;
 }
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    const client = new Client(env.DATABASE_URL);
+    await client.connect();
+    const { rows } = await client.query('SELECT * FROM books_to_read;');
+    return new Response(JSON.stringify(rows));
+  },
+};

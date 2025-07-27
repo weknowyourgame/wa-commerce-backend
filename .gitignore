@@ -177,3 +177,6 @@ wrangler.toml
 
 .vscode/
 
+wrangler.jsonc
+
+worker-configuration.d.ts

@@ -1,7 +1,7 @@
 import { Context } from "hono";
 import { Client } from '@neondatabase/serverless';
 import { TextMessage, InteractiveMessage } from './types/wa-types';
-import { processIntentMessage } from './ai-utils';
+import { processIntentMessageInternal } from './ai-utils';
 
 // POST /api/whatsapp/send-message - Send text message
 export async function sendTextMessage(c: Context) {
@@ -29,28 +29,31 @@ export async function sendTextMessage(c: Context) {
     await client.connect();
     
     try {
-      const { rows } = await client.query(
-        `SELECT m.id, m."phoneNumberId", m."whatsappAccessToken" FROM "Merchant" m WHERE m."apiToken" = $1`,
+      const { rows: merchantRows } = await client.query(
+        `SELECT m.*, u.name as user_name, u.email as user_email
+         FROM "Merchant" m
+         LEFT JOIN "user" u ON m."userId" = u.id
+         WHERE m."apiToken" = $1`,
         [apiToken]
       );
 
-      if (rows.length === 0) {
+      if (merchantRows.length === 0) {
         return c.json({ 
           success: false, 
           error: "Invalid API token" 
         }, 401);
       }
 
-      const merchant = rows[0];
-      
+      const merchant = merchantRows[0];
+
+      // Check if merchant has WhatsApp configuration
       if (!merchant.phoneNumberId || !merchant.whatsappAccessToken) {
         return c.json({ 
           success: false, 
-          error: "WhatsApp not configured for this merchant" 
+          error: "Merchant WhatsApp configuration is missing" 
         }, 400);
       }
 
-      // Send message via WhatsApp Business API
       const whatsappMessage: TextMessage = {
         messaging_product: "whatsapp",
         recipient_type: "individual",
@@ -77,13 +80,14 @@ export async function sendTextMessage(c: Context) {
       const result = await response.json();
 
       if (!response.ok) {
-        return c.json({
-          success: false,
-          error: result.error?.message || "Failed to send WhatsApp message"
-        }, response.status);
+        console.error('Failed to send WhatsApp message:', result);
+        return c.json({ 
+          success: false, 
+          error: "Failed to send WhatsApp message" 
+        }, 500);
       }
 
-      // Log the message in database
+      // Log the message
       await client.query(
         `INSERT INTO "WebhookEvent" (id, payload, "merchantId", "receivedAt")
          VALUES ($1, $2, $3, $4)`,
@@ -102,13 +106,17 @@ export async function sendTextMessage(c: Context) {
 
       return c.json({
         success: true,
-        data: result,
-        message: "Message sent successfully"
+        data: {
+          message_id: result.messages?.[0]?.id,
+          whatsapp_response: result
+        }
       });
+
     } finally {
       await client.end();
     }
   } catch (error: any) {
+    console.error('Error sending WhatsApp message:', error);
     return c.json({
       success: false,
       error: error instanceof Error ? error.message : "Unknown error"
@@ -116,11 +124,11 @@ export async function sendTextMessage(c: Context) {
   }
 }
 
-// POST /api/whatsapp/send-interactive - Send interactive message (buttons/lists)
+// POST /api/whatsapp/send-interactive - Send interactive message
 export async function sendInteractiveMessage(c: Context) {
   try {
     const body = await c.req.json();
-    const { to, type, header, body: messageBody, action } = body;
+    const { to, interactiveMessage } = body;
     const apiToken = c.req.header("Authorization")?.replace("Bearer ", "");
     
     if (!apiToken) {
@@ -130,17 +138,10 @@ export async function sendInteractiveMessage(c: Context) {
       }, 401);
     }
 
-    if (!to || !type || !messageBody || !action) {
+    if (!to || !interactiveMessage) {
       return c.json({ 
         success: false, 
-        error: "to, type, body, and action are required" 
-      }, 400);
-    }
-
-    if (!['button', 'list'].includes(type)) {
-      return c.json({ 
-        success: false, 
-        error: "type must be 'button' or 'list'" 
+        error: "to and interactiveMessage are required" 
       }, 400);
     }
 
@@ -149,46 +150,38 @@ export async function sendInteractiveMessage(c: Context) {
     await client.connect();
     
     try {
-      const { rows } = await client.query(
-        `SELECT m.id, m."phoneNumberId", m."whatsappAccessToken" FROM "Merchant" m WHERE m."apiToken" = $1`,
+      const { rows: merchantRows } = await client.query(
+        `SELECT m.*, u.name as user_name, u.email as user_email
+         FROM "Merchant" m
+         LEFT JOIN "user" u ON m."userId" = u.id
+         WHERE m."apiToken" = $1`,
         [apiToken]
       );
 
-      if (rows.length === 0) {
+      if (merchantRows.length === 0) {
         return c.json({ 
           success: false, 
           error: "Invalid API token" 
         }, 401);
       }
 
-      const merchant = rows[0];
-      
+      const merchant = merchantRows[0];
+
+      // Check if merchant has WhatsApp configuration
       if (!merchant.phoneNumberId || !merchant.whatsappAccessToken) {
         return c.json({ 
           success: false, 
-          error: "WhatsApp not configured for this merchant" 
+          error: "Merchant WhatsApp configuration is missing" 
         }, 400);
       }
 
-      // Build interactive message
-      const interactiveMessage: InteractiveMessage = {
+      const whatsappMessage: InteractiveMessage = {
         messaging_product: "whatsapp",
         recipient_type: "individual",
         to,
         type: "interactive",
-        interactive: {
-          type: type as "button" | "list",
-          body: {
-            text: messageBody
-          },
-          action
-        }
+        interactive: interactiveMessage
       };
-
-      // Add header if provided
-      if (header) {
-        interactiveMessage.interactive.header = header;
-      }
 
       const response = await fetch(
         `https://graph.facebook.com/v21.0/${merchant.phoneNumberId}/messages`,
@@ -198,20 +191,21 @@ export async function sendInteractiveMessage(c: Context) {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${merchant.whatsappAccessToken}`
           },
-          body: JSON.stringify(interactiveMessage)
+          body: JSON.stringify(whatsappMessage)
         }
       );
 
       const result = await response.json();
 
       if (!response.ok) {
-        return c.json({
-          success: false,
-          error: result.error?.message || "Failed to send interactive WhatsApp message"
-        }, response.status);
+        console.error('Failed to send WhatsApp interactive message:', result);
+        return c.json({ 
+          success: false, 
+          error: "Failed to send WhatsApp interactive message" 
+        }, 500);
       }
 
-      // Log the message in database
+      // Log the message
       await client.query(
         `INSERT INTO "WebhookEvent" (id, payload, "merchantId", "receivedAt")
          VALUES ($1, $2, $3, $4)`,
@@ -220,8 +214,7 @@ export async function sendInteractiveMessage(c: Context) {
           JSON.stringify({
             type: 'whatsapp_interactive_message_sent',
             to,
-            interactive_type: type,
-            action,
+            interactiveMessage,
             whatsapp_response: result
           }),
           merchant.id,
@@ -231,13 +224,17 @@ export async function sendInteractiveMessage(c: Context) {
 
       return c.json({
         success: true,
-        data: result,
-        message: "Interactive message sent successfully"
+        data: {
+          message_id: result.messages?.[0]?.id,
+          whatsapp_response: result
+        }
       });
+
     } finally {
       await client.end();
     }
   } catch (error: any) {
+    console.error('Error sending WhatsApp interactive message:', error);
     return c.json({
       success: false,
       error: error instanceof Error ? error.message : "Unknown error"
@@ -247,107 +244,99 @@ export async function sendInteractiveMessage(c: Context) {
 
 // GET /webhook - Webhook verification
 export async function webhookVerification(c: Context) {
-  try {
-    const mode = c.req.query('hub.mode');
-    const token = c.req.query('hub.verify_token');
-    const challenge = c.req.query('hub.challenge');
-    const verifyToken = c.env.VERIFY_TOKEN || 'your_verify_token';
+  const mode = c.req.query("hub.mode");
+  const token = c.req.query("hub.verify_token");
+  const challenge = c.req.query("hub.challenge");
 
-    if (mode === 'subscribe' && token === verifyToken) {
-      console.log('WEBHOOK VERIFIED');
-      return new Response(challenge, { status: 200 });
-    } else {
-      return new Response('Forbidden', { status: 403 });
-    }
-  } catch (error: any) {
-    return c.json({
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error"
-    }, 500);
+  console.log("Webhook verification request:", { mode, token, challenge });
+
+  // You should verify the token against your stored verification token
+  const verifyToken = c.env.VERIFY_TOKEN;
+
+  if (mode === "subscribe" && token === verifyToken) {
+    console.log("Webhook verified successfully");
+    return c.text(challenge || "OK");
+  } else {
+    console.log("Webhook verification failed");
+    return c.text("Forbidden", 403);
   }
 }
 
-// POST /webhook - Webhook receiver (incoming messages)
+// POST /webhook - Webhook receiver
 export async function webhookReceiver(c: Context) {
   try {
-    const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    console.log(`\n\nWebhook received ${timestamp}\n`);
-    
     const body = await c.req.json();
-    console.log(JSON.stringify(body, null, 2));
+    console.log("Webhook received:", JSON.stringify(body, null, 2));
 
-    // Process the webhook
-    if (body.object === 'whatsapp_business_account') {
+    // TODO: Verify webhook signature
+    // Verify webhook signature 
+    // const signature = c.req.header("x-hub-signature-256");
+    // Verify signature TODO
+
+    if (body.object === "whatsapp_business_account") {
       for (const entry of body.entry) {
         for (const change of entry.changes) {
-          if (change.field === 'messages') {
-            await processWhatsAppMessage(change.value, c.env);
+          if (change.value && change.value.messages) {
+            for (const message of change.value.messages) {
+              await processWhatsAppMessage(message, c.env, c);
+            }
           }
         }
       }
     }
 
-    return new Response('OK', { status: 200 });
+    return c.text("OK");
   } catch (error: any) {
-    console.error('Webhook processing error:', error);
-    return new Response('Internal Server Error', { status: 500 });
+    console.error("Webhook processing error:", error);
+    return c.text("Error", 500);
   }
 }
 
-// Helper function to process incoming WhatsApp messages
-async function processWhatsAppMessage(value: any, env: any) {
+// Process WhatsApp messages
+async function processWhatsAppMessage(value: any, env: any, c: Context) {
   try {
     const client = new Client(env.DATABASE_URL);
     await client.connect();
     
     try {
-      // Extract message details
-      const metadata = value.metadata;
-      const messages = value.messages || [];
-      
-      for (const message of messages) {
-        const phoneNumberId = metadata.phone_number_id;
-        const from = message.from;
-        const messageType = message.type;
-        const timestamp = message.timestamp;
-        
-        // Find merchant by phone number ID
-        const { rows: merchantRows } = await client.query(
-          `SELECT id, "apiToken" FROM "Merchant" WHERE "phoneNumberId" = $1`,
-          [phoneNumberId]
-        );
+      // Find merchant by phone number ID
+      const { rows: merchantRows } = await client.query(
+        `SELECT m.*, u.name as user_name, u.email as user_email
+         FROM "Merchant" m
+         LEFT JOIN "user" u ON m."userId" = u.id
+         WHERE m."phoneNumberId" = $1`,
+        [value.metadata.phone_number_id]
+      );
 
-        if (merchantRows.length === 0) {
-          console.log(`No merchant found for phone number ID: ${phoneNumberId}`);
-          continue;
-        }
+      if (merchantRows.length === 0) {
+        console.log("No merchant found for phone number ID:", value.metadata.phone_number_id);
+        return c.text("No merchant found", 404);
+      }
 
-        const merchant = merchantRows[0];
+      const merchant = merchantRows[0];
 
-        // Store the webhook event
-        await client.query(
-          `INSERT INTO "WebhookEvent" (id, payload, "merchantId", "receivedAt")
-           VALUES ($1, $2, $3, $4)`,
-          [
-            crypto.randomUUID(),
-            JSON.stringify({
-              type: 'whatsapp_message_received',
-              from,
-              message_type: messageType,
-              timestamp,
-              message_data: message
-            }),
-            merchant.id,
-            new Date()
-          ]
-        );
+      // Log the incoming message
+      await client.query(
+        `INSERT INTO "WebhookEvent" (id, payload, "merchantId", "receivedAt")
+         VALUES ($1, $2, $3, $4)`,
+        [
+          crypto.randomUUID(),
+          JSON.stringify({
+            type: 'whatsapp_message_received',
+            message: value
+          }),
+          merchant.id,
+          new Date()
+        ]
+      );
 
-        // Process different message types
-        if (messageType === 'text') {
-          await processTextMessage(message, merchant, client, env);
-        } else if (messageType === 'interactive') {
-          await processInteractiveMessage(message, merchant, client);
-        }
+      // Process different message types
+      if (value.text) {
+        await processTextMessage(value, merchant, client, env);
+      } else if (value.interactive) {
+        await processInteractiveMessage(value, merchant, client);
+      } else {
+        return c.text("Unsupported message type", 400);
       }
     } finally {
       await client.end();
@@ -442,157 +431,22 @@ async function sendWhatsAppResponse(to: string, message: string, merchant: any, 
   }
 }
 
-// Internal function to process intent (without HTTP context)
-async function processIntentMessageInternal(request: any, env: any) {
-  try {
-    const { message, phoneNumber, apiToken } = request;
-    
-    if (!apiToken || !message) {
-      return { success: false, error: "Missing required fields" };
-    }
-
-    // Import the AI functions directly
-    const { generate } = await import('./fetchers');
-    const { generateIntentPrompt } = await import('./prompts/classifier');
-    const { generateProductsPrompt } = await import('./prompts/products');
-    const { generateOrdersPrompt } = await import('./prompts/orders');
-    const { generateBusinessPrompt } = await import('./prompts/business');
-    const { generatePaymentPrompt } = await import('./prompts/payment');
-    const { generateGeneralPrompt } = await import('./prompts/general');
-    const { UserIntent } = await import('./types/ai-types');
-
-    // Step 1: Classify intent
-    const intentPrompt = generateIntentPrompt(message);
-    const intentResponse = await generate({
-      prompt: intentPrompt,
-      model: "gpt-3.5-turbo",
-      max_tokens: 100
-    }, env);
-
-    if (!intentResponse.success) {
-      throw new Error("Failed to classify intent");
-    }
-
-    const intentResult = JSON.parse(intentResponse.data);
-    const intent = intentResult.intent as UserIntent;
-    const targetId = intentResult.targetId;
-
-    // Step 2: Get merchant context
-    const client = new Client(env.DATABASE_URL);
-    await client.connect();
-    
-    try {
-      const { rows: merchantRows } = await client.query(
-        `SELECT m.*, u.name as user_name, u.email as user_email
-         FROM "Merchant" m
-         LEFT JOIN "user" u ON m."userId" = u.id
-         WHERE m."apiToken" = $1`,
-        [apiToken]
-      );
-
-      if (merchantRows.length === 0) {
-        return { success: false, error: "Invalid API token" };
-      }
-
-      const merchant = merchantRows[0];
-
-      // Get products
-      const { rows: products } = await client.query(
-        `SELECT id, name, description, price, "imageUrl" FROM "Product" WHERE "merchantId" = $1`,
-        [merchant.id]
-      );
-
-      // Get orders
-      const { rows: orders } = await client.query(
-        `SELECT o.id, o.amount, o.status, o."createdAt", o.txnId,
-                p.name as product_name, p.price as product_price
-         FROM "Order" o
-         LEFT JOIN "Product" p ON o."productId" = p.id
-         WHERE o."merchantId" = $1
-         ORDER BY o."createdAt" DESC`,
-        [merchant.id]
-      );
-
-      const context = { merchant, products, orders };
-
-      // Step 3: Generate context-aware response
-      let prompt = "";
-      switch (intent) {
-        case UserIntent.VIEW_PRODUCTS:
-        case UserIntent.PRODUCT_INFO:
-        case UserIntent.ORDER_PRODUCT:
-          prompt = generateProductsPrompt(intent, message, context.products, targetId);
-          break;
-        case UserIntent.ALL_ORDERS_INFO:
-        case UserIntent.SINGLE_ORDER_INFO:
-        case UserIntent.CONFIRM_ORDER:
-          prompt = generateOrdersPrompt(intent, message, context.orders, targetId);
-          break;
-        case UserIntent.BUSINESS_INFO:
-          prompt = generateBusinessPrompt(intent, message, context.merchant);
-          break;
-        case UserIntent.PAYMENT_INFO:
-          prompt = generatePaymentPrompt(intent, message, context.merchant);
-          break;
-        case UserIntent.GENERAL_CHAT:
-        default:
-          prompt = generateGeneralPrompt(intent, message);
-          break;
-      }
-
-      const response = await generate({
-        prompt,
-        model: "gpt-4",
-        max_tokens: 500
-      }, env);
-
-      if (!response.success) {
-        return { success: false, error: "Failed to generate response" };
-      }
-
-      return {
-        success: true,
-        data: {
-          response: response.data,
-          intent,
-          targetId,
-          context: {
-            productsCount: context.products.length,
-            ordersCount: context.orders.length,
-            businessName: context.merchant.businessInfo?.name || 'Unknown'
-          }
-        }
-      };
-    } finally {
-      await client.end();
-    }
-  } catch (error: any) {
-    console.error("Intent processing error:", error);
-    return { success: false, error: error.message };
-  }
-}
-
 // Process interactive messages (button clicks, list selections)
 async function processInteractiveMessage(message: any, merchant: any, client: Client) {
   const interactive = message.interactive;
   const from = message.from;
   
   console.log(`Processing interactive message from ${from}:`, interactive);
-  
-  // Handle button responses
-  if (interactive.type === 'button_reply') {
-    const buttonId = interactive.button_reply.id;
-    console.log(`Button clicked: ${buttonId}`);
-    
-    // Add your business logic here
-    // For example: order status, product catalog, etc.
+
+  let responseText = "I'm sorry, I didn't understand that interaction.";
+
+  if (interactive.type === "button_reply") {
+    const buttonText = interactive.button_reply.title;
+    responseText = `You selected: ${buttonText}. How can I help you with that?`;
+  } else if (interactive.type === "list_reply") {
+    const listItem = interactive.list_reply.title;
+    responseText = `You selected: ${listItem}. How can I help you with that?`;
   }
-  
-  // Handle list responses
-  if (interactive.type === 'list_reply') {
-    const listId = interactive.list_reply.id;
-    console.log(`List item selected: ${listId}`);
-    
-    // Add your business logic here
-  }
+
+  await sendWhatsAppResponse(from, responseText, merchant, client);
 } 

@@ -534,6 +534,7 @@ export async function getUserInfo(c: Context) {
                 p.id as product_id, p.name as product_name, p.price as product_price
          FROM "Order" o
          LEFT JOIN "Product" p ON o."productId" = p.id
+         LEFT JOIN "Customer" c ON o."customerId" = c.id
          WHERE c.phone = $1 AND o."merchantId" = $2
          ORDER BY o."createdAt" DESC`,
         [phoneNumber, merchantId]

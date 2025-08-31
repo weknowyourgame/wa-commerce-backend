@@ -276,9 +276,10 @@ export async function webhookReceiver(c: Context) {
     if (body.object === "whatsapp_business_account") {
       for (const entry of body.entry) {
         for (const change of entry.changes) {
+          const phoneNumberId = change?.value?.metadata?.phone_number_id;
           if (change.value && change.value.messages) {
             for (const message of change.value.messages) {
-              await processWhatsAppMessage(message, c.env, c);
+              await processWhatsAppMessage(message, phoneNumberId, c.env, c);
             }
           }
         }
@@ -293,7 +294,7 @@ export async function webhookReceiver(c: Context) {
 }
 
 // Process WhatsApp messages
-async function processWhatsAppMessage(value: any, env: any, c: Context) {
+async function processWhatsAppMessage(message: any, phoneNumberId: string | undefined, env: any, c: Context) {
   try {
     const client = new Client(env.DATABASE_URL);
     await client.connect();
@@ -305,11 +306,11 @@ async function processWhatsAppMessage(value: any, env: any, c: Context) {
          FROM "Merchant" m
          LEFT JOIN "user" u ON m."userId" = u.id
          WHERE m."phoneNumberId" = $1`,
-        [value.metadata.phone_number_id]
+        [phoneNumberId]
       );
 
       if (merchantRows.length === 0) {
-        console.log("No merchant found for phone number ID:", value.metadata.phone_number_id);
+        console.log("No merchant found for phone number ID:", phoneNumberId);
         return c.text("No merchant found", 404);
       }
 
@@ -323,7 +324,7 @@ async function processWhatsAppMessage(value: any, env: any, c: Context) {
           crypto.randomUUID(),
           JSON.stringify({
             type: 'whatsapp_message_received',
-            message: value
+            message
           }),
           merchant.id,
           new Date()
@@ -331,10 +332,10 @@ async function processWhatsAppMessage(value: any, env: any, c: Context) {
       );
 
       // Process different message types
-      if (value.text) {
-        await processTextMessage(value, merchant, client, env);
-      } else if (value.interactive) {
-        await processInteractiveMessage(value, merchant, client);
+      if (message.text) {
+        await processTextMessage(message, merchant, client, env);
+      } else if (message.interactive) {
+        await processInteractiveMessage(message, merchant, client);
       } else {
         return c.text("Unsupported message type", 400);
       }

@@ -50,7 +50,7 @@ app.get("/", (c) => {
         "GET /api/orders/:id - Get specific order",
         "POST /api/orders - Get customer orders",
         "PUT /api/orders/:id/status - Update order status",
-        "GET /api/user-info/:userId - Get customer info"
+        "GET /api/user-info/:phoneNumber - Get customer info"
       ],
       whatsapp: [
         "POST /api/whatsapp/send-message - Send text message",
@@ -75,7 +75,7 @@ app.get("/api/business-info", getBusinessInfo);
 app.get("/api/orders/:id", getOrderById);
 app.post("/api/orders", getCustomerOrders);
 app.put("/api/orders/:id/status", updateOrderStatus);
-app.get("/api/user-info/:userId", getUserInfo);
+app.get("/api/user-info/:phoneNumber", getUserInfo);
 
 // WhatsApp Endpoints
 app.post("/api/whatsapp/send-message", sendTextMessage);
